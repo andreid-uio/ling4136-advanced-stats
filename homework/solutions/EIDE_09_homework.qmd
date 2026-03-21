@@ -55,7 +55,7 @@ Let's have a look at the data:
 #| label: data
 
 # Load in the dataset and already remove irrelevant stuff:
-pokemon <- read_csv('../data/Japanese_Pokemon_simplified.csv') |> 
+pokemon <- read_csv('../../data/Japanese_Pokemon_simplified.csv') |> 
   select(-`Sum of values`, -Checksum)
 
 # check data set:
@@ -93,32 +93,163 @@ Now imagine researchers want to use this data set to *test* the following hypoth
 
 ## A: Preregister your analysis
 
-Take the hypothesis and what you know about the data set and its structure to predict a very specific relationship that you can test. You are allowed to look at the dataset, but do not look at concrete relationships that might be a manifestation of the hypothesis.
+Hypothesis: *The evolution stage of a Pokemon is reflected in aspects of its Japanese name*
 
-Specific relationship to be tested:
+The stated hypothesis will be tested by investigating the specific relationship between amount of phones in a Pokemon's name and the evolution stage of the Pokemon. The outcome variable of Length is operationalized as the amount of phones in a Pokemon's name. Length will be predicted by the explanatory variable of Evolution, in two groups of pre-evolution and post-evolution Pokemon.
+
+The relationship between Length and Evolution will be explored by fitting a Bayesian regression model, relating prior beliefs about the phenomenon with the posterior probability after observing the data. For the analysis, weakly informative priors will be specified for the Length parameter as a normal distribution with a mean of 6 phones and SD of 6. These are the initial beliefs about plausible amounts of phones for a Pokemon's names in Japanese.
+
+The relationship of interest is concerning the official names of Japanese Pokemon, thus elicited names from naive participants will be removed prior to this analysis.
 
 ## B: Run your preregistered analysis
 
 Run the preregistered analysis made in (A) above and interpret your results relative to the hypothesis.
 
 ```{r}
-#| label: analysis
+#| label: Bayesian analysis
+library(brms)
+library(tidybayes)
+library(bayestestR)
 
+# Filtering data 
+pokemon_mutated<- pokemon %>%
+  filter(Designation=="Official") %>%
+  mutate(Evolution = as.factor(Evolution)) 
+
+
+# model formula
+poke_model_formula = bf(Length~Evolution) 
+
+# checking priors
+get_prior(poke_model_formula, pokemon_mutated, family = "gaussian") 
+
+# Specifying weakly informative priors 
+pokemon_priors <- c(prior(normal(6,6), class = 'Intercept'),
+               prior(normal(0,6), class = 'b'))
+
+#Running model
+poke_model <- brm(poke_model_formula,
+                  family = gaussian(),
+                  prior = pokemon_priors,
+                  data = pokemon_mutated,
+                  chains = 4,
+                  cores = 4, 
+                  iter = 2000,
+                  warmup = 1000,
+                  thin = 1)
+poke_model
+
+
+## Calculating probability of direction (pd) 
+poke_model |> 
+  spread_draws(b_Intercept,b_Evolution2) |> 
+  select((b_Intercept),(b_Evolution2) ) |> 
+  p_direction()
+
+
+## Calculating Bayes Factor
+#extract posteriors
+poke_posteriors <- poke_model |> 
+  spread_draws(b_Evolution2) |> 
+  select((b_Evolution2) )
+
+#prior samples
+poke_priors <-brm(poke_model_formula,
+                  family = gaussian(),
+                  prior = pokemon_priors,
+                   sample_prior = "only",
+                  data = pokemon_mutated,
+                  chains = 4,
+                  cores = 4, 
+                  iter = 2000,
+                  warmup = 1000,
+                  thin = 1)
+                  
+
+pokemon_priors <- poke_priors |> 
+  spread_draws(b_Evolution2) |> 
+  select((b_Evolution2) )
+
+#Bayes factor against null value
+bayesfactor_parameters(poke_posteriors, pokemon_priors, direction = "two-sided", null = 0)
+
+
+#INTERPRETATION:
+#Posterior distributions of the model indicate that the mean amount of phones for pre-evolution Pokemon names are 7.28 [95% Credible Interval: 7.13 to 7.43]. The mean difference between the groups is estimated to be an increase of 0.9 phones [95% Credible Interval: 0.68 to 1.11].
+#Probability of direction (pd): 100% of the posterior samples are positive, indicating negative values to be implausible.
+#Bayes factor: analysis yielded a Bayes Factor of 5.84 for the post-evolution group. This is indicating that the posteriors relative to the priors have shifted from the point null value to a moderate degree, suggesting moderate evidence for the alteraitve hypothesis (H1= there is a relationship between Length and Evolution).
 
 
 ```
 
 ## C: Show contradicting results
 
-Now explore the data and find two alternative way to test the research hypothesis that yield convincing results that go in opposite directions based of your findings in (A). Justify all your choices verbally after the fact.
+Alternative 1: Simple linear regression in a NHST-framework
 
-Two alternative ways:\
--\
--
+-   Testing if there is a significant relationship between the amount of /o/ sounds in a Pokemon's name and the evolution stage of the Pokemon, where the null-hypothesis would be no relationship.
+-   Findings: no significant effect between pre- and post-evolution names
+
+```{r}
+#| label: Simple linear regression
+
+#Linear regression model
+poke_model2 <- lm(o ~ Evolution, 
+                  data = pokemon_mutated)
+
+#Model output
+summary(poke_model2)
+
+#INTERPRETATION: The mean amount of /o/ for the names of pre-evolution Pokemon is predicted to be 0.69. The mean difference in phones between the groups is estimated to be 0.11, predicting post-evolution Pokemon-names to have a mean of 0.71.This difference is not significant at an alpha level of 0.01, indicating the difference being too probable for rejecting the null hypothesis. 
+
+```
+
+Alternative 2: Including 'Designation' as a predictor in multiple regression
+
+-   Hypothesizing the relationship between the evolution stage and /o/ sounds in a Pokemon's name is being reflected even with naive participants, including both official and elicited Pokemon-names.
+-   Findings: Significant effects for the Evolution predictor, not significant for the Designation predictor.
+
+```{r}
+#| label: Multiple regression
+
+pokemon <- pokemon%>% 
+  mutate(Evolution = as.factor(Evolution))
+
+#Model
+poke_model3 <- lm(o ~ Evolution + Designation, 
+                  data = pokemon)
+#Model output
+summary(poke_model3)
+
+
+#INTERPRETATION: Predicted amount of /o/ for pre-evolution Pokemon by naive elicitation is 0.75.
+#Evolution2= Changing to post-evolution names by naive participants, the measure increase by 0.12 /o/ phones.This difference is statistically significant (p<0.003), suggesting the observed values are sufficiently improbable to reject the null hypothesis of no relationship.
+#DesignationOfficial= Changing to official names, the pre-evolution Pokemon-names decrease by -0.06 /o/ phones. This difference is not significant at an alpha level of 0.05, indicating the difference between official and elicitated names being too probable for rejecting the null hypothesis.
+
+```
 
 ## D: Researcher degrees of freedom
 
-Note down all dimensions of researcher degrees of freedom that make the mapping of the hypothesis onto your data analysis vague. How many possible combinations can you think of?
+Dimensions of the researcher degrees of freedom for this hypothesis include many different possible choices in operationalizing the variables, deciding on statistical methods, and choosing models to test the hypothesis.
+
+The hypothesis *"The evolution stage of a Pokemon is reflected in aspects of its Japanese name"* is vague, especially regarding which variables to be specified for "*aspects of its Japanese name".* For my initial analysis, I decided to use the variable 'Length' as the critical aspect of the Pokemon-name to be investigated. For the alternative analyses I decided to use 'o' and 'Designation' as predictors. With this data set, many other "aspects" of the name would also have been possible including:
+
+-   amount of any other specific phone in the name
+
+-   amounts of consonants vs. amounts of vowels in the name
+
+Other dimensions of the researcher degrees of freedom include the choices of statistical methods and models to test the hypothesis. My choices were based on personal considerations of appropriateness for this assignment, running the first model as a Bayesian regression with weakly informative priors, and the alternative models in a null-hypothesis-significance testing framework. Possible other decisions I could have done include:
+
+-   Specifying very different priors for the Bayesian analysis
+
+-   Include interaction terms in the models
+
+-   Including random effects in the models
+
+-   Other choices of multiple predictors
+
+-   Summary statistics of mean, mode, min and max for specific phones in the names
+
+All this concidered, there are numerous of possible combinations, emphasizing the many dimensions of a researcher degrees of freedom for such a vague hypothesis.
 
 # References
 
