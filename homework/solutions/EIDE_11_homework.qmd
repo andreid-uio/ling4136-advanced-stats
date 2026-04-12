@@ -1,0 +1,231 @@
+---
+title: "session11 - homework"
+format: html
+editor: visual
+date: 2025-07-17
+author: Timo Roettger
+execute:
+  error: false
+  warning: false
+  message: false
+  cache: true
+bibliography: ../resources/bibliography.bib
+---
+
+# Preamble: Loading packages and configuration
+
+```{r}
+#| label: data_and_libraries
+#| echo: false
+
+# just run this code chunk
+# function to ignoring the setting of the relative path below when knitting
+run_if_not_knitting <- function(expr) {
+  if (!isTRUE(getOption("knitr.in.progress"))) {
+    eval(expr)
+  }
+}
+
+# nifty code using the pacman package
+# it checks if the packages specified below are installed, if not, they will be installed, if yes, they will be loaded
+if (!require("pacman")) install.packages("pacman")
+pacman::p_load(rstudioapi, tidyverse, tidybayes, brms, ggdist, bayestestR, modelr)
+
+# set the current working directory to the one where this file is
+run_if_not_knitting(current_working_dir <- dirname(rstudioapi::getActiveDocumentContext()$path))
+run_if_not_knitting(setwd(current_working_dir))
+
+# options to increase efficiency of brms models (optional)
+options(brms.backend = "cmdstanr")
+options(mc.cores = parallel::detectCores())
+
+```
+
+# Introduction
+
+We will be analyzing the data from @roettger2014assessing.
+
+```{r}
+#| label: preprocessing
+
+# Load our datasets
+incNeutr <- read_csv("../../data/E1_production.csv") |> 
+  # we will focus only on the relevant columns
+  select(subject, voicing, item_pair, usable, vowel_dur) |> 
+  # and only on rows the authors deemed usable
+  filter(usable == "usable") |> 
+  select(!usable)
+
+```
+
+The variables:
+
+`subject`: unique identifier for participants (n = 16)
+
+`voicing`: underlying voicing status of stop (`voiced` vs. `voiceless`)
+
+`item_pair`: unique identifier for pseudo word minimal pairs (n = 24)
+
+`vowel_dur`: vowel duration in ms
+
+In this study, we recorded people producing words such as Rad and Rat in German and were interested to see whether these words phonetically differ. The reason why this is interesting is that, according to German phonology, these words *should* be identical, i.e. he voicing distinction between /d/ and /t/ should have been *neutralized.* However, previous literature indicates that this neutralization is phonetically *incomplete.* For example, the vowel preceding a (de)voiced stop such /d/ is slightly longer preceding a voiceless stop such as /t/.
+
+The researchers hypothesize that the vowel duration is meaningfully longer preceding voiced stops than preceding voiceless stops. They model this relationship using a linear mixed effects model that accounts for both speaker and word variation as well as by-speaker and by-word variation for the critical predictor voicing.
+
+```{r}
+#| label: model_formula
+
+# store model formula
+mdl_formula = bf(vowel_dur ~ voicing +
+                   # random intercepts and slopes for subject and item_pair
+                   (1 + voicing | subject) +
+                   (1 + voicing | item_pair))
+
+```
+
+```{r}
+#| label: spec-priors
+
+# some weakly informative priors 
+my_priors <- c(prior(normal(150,50), class = 'Intercept'),
+               # weakly informative prior for the voicing difference (very diffuse)
+               prior(normal(0, 30), class = 'b', coef = 'voicingvoiceless'),
+               # weakly informative prior for all sources of variance (very diffuse)
+               prior(cauchy(0,100), class = 'sd'),
+               # weakly informative prior for residual variance (very diffuse)
+               prior(cauchy(0,100), class = 'sigma'),
+               # correlations
+               prior(lkj(1), class = 'cor'))
+
+```
+
+```{r}
+#| label: run-model
+
+# run model
+xmdl <- brm(mdl_formula,
+            family = gaussian(),
+            prior = my_priors,
+            file = "../../models/in_sesoi",
+            data = incNeutr,
+            seed = 42)
+
+# I also store the prior-only model 
+xmdl_prior <- brm(mdl_formula,
+            family = gaussian(),
+            prior = my_priors,
+            sample_prior = "only",
+            file = "../../models/in_sesoi_priors",
+            data = incNeutr,
+            seed = 42)
+
+```
+
+# Exercises
+
+## (a) Plot the posterior distribution
+
+Explore the posterior distribution for the difference between voiced and voiceless stops. Interpret it.
+
+```{r}
+
+#extracting samples and calculating values for both conditions
+posteriors <- xmdl |> 
+  spread_draws(b_Intercept, b_voicingvoiceless) |> 
+  mutate(Voiced = b_Intercept,
+         Voiceless = b_Intercept + b_voicingvoiceless) |> 
+  select(Voiced, Voiceless) |> 
+  pivot_longer(everything(),
+               names_to = "Condition",
+               values_to = "Duration") 
+
+#Plotting posteriors for both conditions
+posteriors |> 
+  ggplot(aes(x = Duration,
+             fill = Condition)) +
+    geom_density() +
+    labs(x = "Posterior distributions for mean duration") +
+    facet_wrap(~Condition, ncol = 1) +
+    scale_fill_manual(values = c('darkorchid3', "peachpuff"))
+
+# COMMENT: The distributions for average duration look to be overlapping, but the two conditions have peaks at different values.
+
+
+
+# Plotting posterior distribution for b_voicingvoiceless (difference between the conditions)
+xmdl |> 
+  spread_draws(b_voicingvoiceless) |> 
+  ggplot(aes(x = b_voicingvoiceless)) +
+    stat_halfeye() +
+     geom_vline(xintercept = 0, lty = 'dashed') +
+    labs(x = "Posterior distribution for mean difference") +
+  theme_minimal()
+
+#INTERPRETATION: The majority of the distribution is negative values, centered around -8 to -11, but the right tail is slightly overlapping with zero. These estimates indicate vowels preceding voiceless stops to have an average duration that is shorter than vowels preceding devoiced stops. 
+
+```
+
+## (b) Define a SESOI
+
+Define a SESOI and justify it. Can you find an applied justification for a SESOI. Or a theoretical justification? Are there justifications grounded in measurement? What about justifications based on previous research? Define it and formalize it as a Region of Practical Equivalence as we have done before. Use the `bayesfactor_rope()` function to calculate the Bayes factor for and against the posteriors being inside the ROPE.
+
+```{r}
+
+#Defining Smallest Effect Size of Interest (SESOI):
+#The SESOI for the mean difference is decided to be between 10-25 ms. This is based on the theorietical principle of the Just Noticable Difference (JND), found in previous research [@NICENBOIM201839] citing [@klatt1976linguistic], as well as reseach on measurement error for vowel duration by phoneticians, where the minimum SD is found to be ranging from 2-5 ms [allen1978vowel].
+
+
+# Formalizing as ROPE
+rope <- c(10,25)
+
+#Calculate BF for ROPE
+BF_1 <- 
+  bayesfactor_rope(posterior = xmdl,
+                   null = rope,
+                   parameter = "b_voicingvoiceless")
+
+BF_1
+
+#INTERPRETATION: The Bayes factor is 1.09e+06. This is considered to be very strong evidence for the alterantive hypothesis, meaning the posterior belief indicates that the difference between voiced and voiceless stops being outside the ROPE is 1.09e+06 more probable than the prior belief.
+```
+
+## (c) Check robustness of your analysis
+
+How robust is your conclusion against different prior choices?
+
+```{r}
+
+# Setting narrower priors
+narrow_priors <- c(prior(normal(150,10), class = 'Intercept'),
+               prior(normal(0, 10), class = 'b', coef = 'voicingvoiceless'),
+               prior(cauchy(0,25), class = 'sd'),
+               prior(cauchy(0,25), class = 'sigma'),
+               prior(lkj(1), class = 'cor'))
+
+# Running new model 
+narrow_xmdl <-brm(mdl_formula,
+            family = gaussian(),
+            prior = narrow_priors,
+            file = "../../models/in_sesoi",
+            data = incNeutr,
+            seed = 42)
+
+# Calculating BF for the model narrower prior
+bayesfactor_rope(posterior = narrow_xmdl,
+                   null = rope,
+                   seed = 234,
+                   parameter = "b_voicingvoiceless")
+
+
+#INTERPRETATION: For narrower priors the Bayes Factor is 1.14e+06, which is still considered to be very strong evidence for the alterantive hypothesis. The conclusion would be the same as for wider priors; Given the data, the model and the priors, the alternative hypothesis that the posteriors are outside the ROPE (10-25 ms) is more probable than the null hypothesis. 
+```
+
+# References
+
+::: {#refs}
+@article{allen1978vowel, title={Vowel duration measurement: A reliability study}, author={Allen, George D}, journal={The Journal of the Acoustical Society of America}, volume={63}, number={4}, pages={1176--1185}, year={1978}, publisher={Acoustical Society of America} }
+
+@article{klatt1976linguistic, title={Linguistic uses of segmental duration in English: Acoustic and perceptual evidence}, author={Klatt, Dennis H}, journal={The journal of the acoustical society of America}, volume={59}, number={5}, pages={1208--1221}, year={1976}, publisher={Acoustical Society of America} }
+
+@article{NICENBOIM201839, title = {Using meta-analysis for evidence synthesis: The case of incomplete neutralization in German}, journal = {Journal of Phonetics}, volume = {70}, pages = {39-55}, year = {2018}, issn = {0095-4470}, doi = {<https://doi.org/10.1016/j.wocn.2018.06.001%7D,> url = {<https://www.sciencedirect.com/science/article/pii/S009544701730147X%7D,> author = {Bruno Nicenboim and Timo B. Roettger and Shravan Vasishth}, keywords = {Meta-analysis, Incomplete neutralization, Final devoicing, German, Bayesian data analysis}, abstract = {Within quantitative phonetics, it is common practice to draw conclusions based on statistical significance alone. Using incomplete neutralization of final devoicing in German as a case study, we illustrate the problems with this approach. If researchers find a significant acoustic difference between voiceless and devoiced obstruents, they conclude that neutralization is incomplete; and if they find no significant difference, they conclude that neutralization is complete. However, such strong claims regarding the existence or absence of an effect based on significant results alone can be misleading. Instead, the totality of available evidence should be brought to bear on the question. Towards this end, we synthesize the evidence from 14 studies on incomplete neutralization in German using a Bayesian random-effects meta-analysis. Our meta-analysis provides evidence in favor of incomplete neutralization. We conclude with some suggestions for improving the quality of future research on phonetic phenomena: ensure that sample sizes allow for high-precision estimates of the effect; avoid the temptation to deploy researcher degrees of freedom when analyzing data; focus on estimates of the parameter of interest and the uncertainty about that parameter; attempt to replicate effects found; and, whenever possible, make both the data and analysis available publicly.} }
+:::
